@@ -1,0 +1,161 @@
+heat_template_version: 2013-05-23
+
+description: Deploy a CoreOS cluster that tracks the Stable Channel
+
+parameters:
+  count:
+    description: Number of CoreOS machines to deploy
+    type: number
+    default: 3
+    constraints:
+    - range:
+        min: 3
+        max: 12
+      description: Must be between 3 and 12 servers.
+
+  key-name:
+    type: string
+    description: Name of key-pair to be used for compute instance
+
+  flavor:
+    type: string
+    default: 4 GB Performance
+    constraints:
+    - allowed_values:
+      - 2 GB Performance
+      - 4 GB Performance
+      - 8 GB Performance
+      - 15 GB Performance
+      - 30 GB Performance
+      - 2GB Standard Instance
+      - 4GB Standard Instance
+      - 8GB Standard Instance
+      - 15GB Standard Instance
+      - 30GB Standard Instance
+      description: |
+        Must be a valid Rackspace Cloud Server flavor for the region you have
+        selected to deploy into.
+
+  user-data:
+    type: string
+    default: ''
+    description: |
+      Formatted user_data containing cloud-config or a script to run on boot.
+
+  name:
+    type: string
+    description: Name of each CoreOS machine booted
+    default: CoreOS-stable-test
+
+  discovery_key:
+    type: string
+    description: CoreOS cluster discovery key from https://discovery.etcd.io/new
+
+  database_name:
+    type: string
+    description: name of application database
+    default: railsapp_db
+
+  database_username:
+    type: string
+    description: name of database user
+    default: railsapp_user
+
+
+resources:
+
+  database_password:
+    type: "OS::Heat::RandomString"
+    properties:
+      length: 16
+      sequence: lettersdigits
+
+  database:
+    type: OS::Trove::Instance
+    properties:
+      databases:
+        - name: { get_param: database_name }
+      datastore_type: mysql
+      datastore_version: '5.6'
+      flavor: 1GB Instance
+      name: railsappheatdb
+      size: 5
+      users:
+      - name: { get_param: database_username }
+        password: { get_attr: [database_password, value] }
+        databases: [ { get_param: database_name } ]
+
+  machines:
+    type: "OS::Heat::ResourceGroup"
+    properties:
+      count: { get_param: count }
+      resource_def:
+        type: OS::Nova::Server
+        properties:
+          key_name: { get_param: key-name }
+          image: "4ca73331-5063-429f-8a27-70de5099e747"
+          flavor: { get_param: flavor }
+          name: { get_param: name }
+          user_data_format: RAW
+          config_drive: "true"
+          user_data:
+            str_replace:
+              template: |
+                coreos:
+                  etcd:
+                    discovery: https://discovery.etcd.io/%discovery_key%
+                    addr: $private_ipv4:4001
+                    peer-addr: $private_ipv4:7001
+                  units:
+                    - name: etcd.service
+                      command: start
+                    - name: fleet.service
+                      command: start
+                    - name: railsapp.1.service
+                      command: start
+                      content: |
+                        [Unit]
+                        Description=RailsApp
+                        After=docker.service
+                        Requires=docker.service
+
+                        [Service]
+                        ExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-1 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp
+                        ExecStop=/usr/bin/docker kill railsapp-1
+
+                        [X-Fleet]
+                        X-Conflicts=railsapp.*.service
+                    - name: railsapp.2.service
+                      command: start
+                      content: |
+                        [Unit]
+                        Description=RailsApp
+                        After=docker.service
+                        Requires=docker.service
+
+                        [Service]
+                        ExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-2 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp
+                        ExecStop=/usr/bin/docker kill railsapp-2
+
+                        [X-Fleet]
+                        X-Conflicts=railsapp.*.service
+                    - name: railsapp.3.service
+                      command: start
+                      content: |
+                        [Unit]
+                        Description=RailsApp
+                        After=docker.service
+                        Requires=docker.service
+
+                        [Service]
+                        ExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-3 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp
+                        ExecStop=/usr/bin/docker kill railsapp-3
+
+                        [X-Fleet]
+                        X-Conflicts=railsapp.*.service
+              params:
+                '%discovery_key%': { get_param: discovery_key }
+                '%db_host%': { get_attr: [database,hostname] }
+                '%db_name%': { get_param: database_name }
+                '%db_username%': { get_param: database_username }
+                '%db_password': { get_attr: [database_password, value]  }
