@@ -47,7 +47,7 @@ parameters:
     description: Name of each CoreOS machine booted
     default: CoreOS-stable-test
 
-  discovery_key:
+  discovery_url:
     type: string
     description: CoreOS cluster discovery key from https://discovery.etcd.io/new
 
@@ -61,6 +61,11 @@ parameters:
     description: name of database user
     default: railsapp_user
 
+  database_instancename:
+    type: string
+    description: name of database user
+    default: railsappheatdb
+
 
 resources:
 
@@ -72,13 +77,14 @@ resources:
 
   database:
     type: OS::Trove::Instance
+    depends_on: database_password
     properties:
       databases:
         - name: { get_param: database_name }
       datastore_type: mysql
       datastore_version: '5.6'
       flavor: 1GB Instance
-      name: railsappheatdb
+      name: { get_param: database_instancename }
       size: 5
       users:
       - name: { get_param: database_username }
@@ -101,9 +107,10 @@ resources:
           user_data:
             str_replace:
               template: |
+                #cloud-config
                 coreos:
                   etcd:
-                    discovery: https://discovery.etcd.io/%discovery_key%
+                    discovery: %discovery_url%
                     addr: $private_ipv4:4001
                     peer-addr: $private_ipv4:7001
                   units:
@@ -111,51 +118,49 @@ resources:
                       command: start
                     - name: fleet.service
                       command: start
-                    - name: railsapp.1.service
-                      command: start
-                      content: |
-                        [Unit]
-                        Description=RailsApp
-                        After=docker.service
-                        Requires=docker.service
-
-                        [Service]
-                        ExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-1 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp
-                        ExecStop=/usr/bin/docker kill railsapp-1
-
-                        [X-Fleet]
-                        X-Conflicts=railsapp.*.service
-                    - name: railsapp.2.service
-                      command: start
-                      content: |
-                        [Unit]
-                        Description=RailsApp
-                        After=docker.service
-                        Requires=docker.service
-
-                        [Service]
-                        ExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-2 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp
-                        ExecStop=/usr/bin/docker kill railsapp-2
-
-                        [X-Fleet]
-                        X-Conflicts=railsapp.*.service
-                    - name: railsapp.3.service
-                      command: start
-                      content: |
-                        [Unit]
-                        Description=RailsApp
-                        After=docker.service
-                        Requires=docker.service
-
-                        [Service]
-                        ExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-3 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp
-                        ExecStop=/usr/bin/docker kill railsapp-3
-
-                        [X-Fleet]
-                        X-Conflicts=railsapp.*.service
               params:
-                '%discovery_key%': { get_param: discovery_key }
-                '%db_host%': { get_attr: [database,hostname] }
-                '%db_name%': { get_param: database_name }
-                '%db_username%': { get_param: database_username }
-                '%db_password': { get_attr: [database_password, value]  }
+                '%discovery_url%': { get_param: discovery_url }
+
+  seed_server:
+    type: OS::Nova::Server
+    depends_on:
+    - database
+    - machines
+    properties:
+      key_name: { get_param: key-name }
+      image: "CoreOS (Stable)"
+      flavor: { get_param: flavor }
+      name: { get_param: name }
+      user_data_format: RAW
+      config_drive: "true"
+      user_data:
+        str_replace:
+          template: |
+            #cloud-config
+            coreos:
+              etcd:
+                discovery: %discovery_url%
+                addr: $private_ipv4:4001
+                peer-addr: $private_ipv4:7001
+              units:
+                - name: etcd.service
+                  command: start
+                - name: fleet.service
+                  command: start
+                - name: installrailsapp.service
+                  command: start
+                  content: |
+                    [Unit]
+                    Description=InstallRailsUnit
+                    After=docker.service
+                    Requires=docker.service
+
+                    [Service]
+                    Type=simple
+                    ExecStart=/bin/bash -c 'sleep 60 && cd /tmp && echo -e "[Unit]\nDescription=RailsApp\nAfter=docker.service\nRequires=docker.service\n\n[Service]\nExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-1 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp\nExecStop=/usr/bin/docker kill railsapp-1\n\n[X-Fleet]\nX-Conflicts=railsapp.*.service\n" > railsapp.1.service && /usr/bin/fleetctl load railsapp.1.service && sleep 15 && /usr/bin/fleetctl start railsapp.1.service'
+          params:
+            '%discovery_url%': { get_param: discovery_url }
+            '%db_host%': { get_attr: [database,hostname] }
+            '%db_name%': { get_param: database_name }
+            '%db_username%': { get_param: database_username }
+            '%db_password': { get_attr: [database_password, value]  }
