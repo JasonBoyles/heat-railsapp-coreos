@@ -99,7 +99,7 @@ resources:
         type: OS::Nova::Server
         properties:
           key_name: { get_param: key-name }
-          image: "4ca73331-5063-429f-8a27-70de5099e747"
+          image: "CoreOS (Stable)"
           flavor: { get_param: flavor }
           name: { get_param: name }
           user_data_format: RAW
