@@ -137,6 +137,51 @@ resources:
         str_replace:
           template: |
             #cloud-config
+
+            write_files:
+              - path: /tmp/install_unit.sh
+                permissions: 0760
+                content: |
+                  #! /bin/bash
+
+                  rm /tmp/install_unit.sh
+
+                  sleep 60
+
+                  cd /tmp
+
+                  cat << EOF > railsapp.1.service
+                  [Unit]
+                  Description=RailsApp
+                  After=docker.service
+                  Requires=docker.service
+
+                  [Service]
+                  ExecStart=/usr/bin/docker run -t -p 80:8080 \
+                  -name railsapp-1 \
+                  -e DB_HOST=%db_host% \
+                  -e DB_NAME=%db_name% \
+                  -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% \
+                  jasonboyles/railsapp
+
+                  ExecStop=/usr/bin/docker kill railsapp-1
+
+                  [X-Fleet]
+                  X-Conflicts=railsapp.*.service
+                  EOF
+
+                  /usr/bin/fleetctl submit railsapp.1.service
+
+                  rm railsapp.1.service
+
+                  sleep 10
+
+                  /usr/bin/fleetctl start railsapp.1.service
+
+                  systemctl disable installrailsapp.service
+
+                  rm /etc/systemd/system/installrailsapp.service
+
             coreos:
               etcd:
                 discovery: %discovery_url%
@@ -156,8 +201,8 @@ resources:
                     Requires=docker.service
 
                     [Service]
-                    Type=simple
-                    ExecStart=/bin/bash -c 'sleep 60 && cd /tmp && echo -e "[Unit]\nDescription=RailsApp\nAfter=docker.service\nRequires=docker.service\n\n[Service]\nExecStart=/usr/bin/docker run -t -p 8080:8080 -name railsapp-1 -e DB_HOST=%db_host% -e DB_NAME=%db_name% -e DB_USERNAME=%db_username% -e DB_PASSWORD=%db_password% jasonboyles/railsapp\nExecStop=/usr/bin/docker kill railsapp-1\n\n[X-Fleet]\nX-Conflicts=railsapp.*.service\n" > railsapp.1.service && /usr/bin/fleetctl load railsapp.1.service && sleep 15 && /usr/bin/fleetctl start railsapp.1.service'
+                    Type=oneshot
+                    ExecStart=/bin/bash /tmp/install_unit.sh
           params:
             '%discovery_url%': { get_param: discovery_url }
             '%db_host%': { get_attr: [database,hostname] }
